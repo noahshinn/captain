@@ -71,7 +71,13 @@ pub async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
             .add_user_message(input.to_string())
             .await;
 
-        let messages = trajectory.lock().await.build_messages().await;
+        let messages = match trajectory.lock().await.build_messages(Some(input)).await {
+            Ok(messages) => messages,
+            Err(e) => {
+                println!("Error: {}", e);
+                continue;
+            }
+        };
         let completion_request = CompletionBuilder::new()
             .model(Model::Claude35Sonnet)
             .provider(Provider::Anthropic)
@@ -82,8 +88,7 @@ pub async fn run_shell() -> Result<(), Box<dyn std::error::Error>> {
         let response = match completion_request.do_request().await {
             Ok(response) => response,
             Err(e) => {
-                println!("Error: {}", e);
-                continue;
+                return Err(e.into());
             }
         };
         send_message_to_stdout("assistant", &response);

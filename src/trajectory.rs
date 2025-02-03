@@ -1,17 +1,19 @@
 use crate::embeddings::embedding;
 use crate::image_analysis::is_redundant_screenshot;
 use crate::llm::{Message, MessageContent, Role};
-use crate::screenshot::generate_text_description_of_screenshot;
-use crate::screenshot::Screenshot;
+use crate::screenshot::{generate_text_description_of_screenshot, Screenshot};
+use crate::search::{dense_embedding_search, EmbeddedDocument, SearchError};
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::sync::Mutex;
 
 // save 5000 tokens for the conversation
-// 50 images * 1600 tokens per image = 80000 tokens
-// 50 screenshot text descriptions * 500 tokens per description = 25000 tokens
-// total = 105000 tokens
-const MAX_NUM_IMAGES_PER_LLM_CALL: usize = 50;
-const MAX_NUM_SCREENSHOT_TEXT_DESCRIPTIONS_PER_LLM_CALL: usize = 50;
+// 80 images * 1600 tokens per image = 128000 tokens
+// total = 5000 + 128000 = 133000 tokens
+const MAX_NUM_IMAGES_PER_LLM_CALL: usize = 80;
+const MAX_NUM_EXPLICIT_RECENT_IMAGES_PER_LLM_CALL: usize = 40;
+const MAX_NUM_RETRIEVED_IMAGES_PER_LLM_CALL: usize =
+    MAX_NUM_IMAGES_PER_LLM_CALL - MAX_NUM_EXPLICIT_RECENT_IMAGES_PER_LLM_CALL;
 
 #[derive(Debug, Clone)]
 pub struct Trajectory {
@@ -31,6 +33,12 @@ pub struct ScreenshotEvent {
 pub enum Event {
     Message(Message),
     Screenshot(ScreenshotEvent),
+}
+
+#[derive(Error, Debug)]
+pub enum BuildMessagesError {
+    #[error("Error retrieving images")]
+    RetrievalError(#[from] SearchError),
 }
 
 impl Trajectory {
@@ -118,8 +126,9 @@ impl Trajectory {
             });
         }
         let conversation_history = self
-            .build_messages()
+            .build_messages(None)
             .await
+            .unwrap()
             .into_iter()
             .filter(|message| message.role != Role::System)
             .collect::<Vec<Message>>();
@@ -154,33 +163,73 @@ impl Trajectory {
         });
     }
 
-    pub async fn build_messages(&self) -> Vec<Message> {
-        let mut messages = Vec::new();
-        let mut num_images = 0;
-        let mut num_image_text_descriptions = 0;
-        for event in self.events.lock().await.clone() {
+    pub async fn build_messages(
+        &self,
+        query_for_retrieval: Option<&str>,
+    ) -> Result<Vec<Message>, BuildMessagesError> {
+        let mut messages_rev = Vec::new();
+        let mut num_explicit_recent_images = 0;
+        let mut retrieval_corpus_screenshot_idxs: Vec<usize> = Vec::new();
+        for (idx, event) in self
+            .events
+            .lock()
+            .await
+            .clone()
+            .into_iter()
+            .rev()
+            .enumerate()
+        {
             match event {
-                Event::Message(message) => messages.push(message),
+                Event::Message(message) => messages_rev.push(message),
                 Event::Screenshot(screenshot_event) => {
                     if screenshot_event.is_redundant {
                         continue;
                     }
-                    if num_images < MAX_NUM_IMAGES_PER_LLM_CALL {
-                        messages.push(screenshot_event.screenshot.to_llm_message(None));
-                        num_images += 1;
-                    } else if let Some(text_description) = screenshot_event.text_description {
-                        if num_image_text_descriptions
-                            < MAX_NUM_SCREENSHOT_TEXT_DESCRIPTIONS_PER_LLM_CALL
-                        {
-                            messages.push(screenshot_event.screenshot.to_llm_message(Some(
-                                format!("Text description: {}", text_description),
-                            )));
-                            num_image_text_descriptions += 1;
-                        }
+                    if num_explicit_recent_images < MAX_NUM_EXPLICIT_RECENT_IMAGES_PER_LLM_CALL {
+                        messages_rev.push(screenshot_event.screenshot.to_llm_message(None));
+                        num_explicit_recent_images += 1;
+                    } else if query_for_retrieval.is_some() {
+                        retrieval_corpus_screenshot_idxs.push(idx);
                     }
                 }
             }
         }
-        messages
+        let mut retrieval_corpus: Vec<EmbeddedDocument<Screenshot>> = Vec::new();
+        let events = self.events.lock().await.clone();
+        for idx in retrieval_corpus_screenshot_idxs {
+            if let Event::Screenshot(screenshot_event) = &events[idx] {
+                retrieval_corpus.push(EmbeddedDocument {
+                    document: screenshot_event.screenshot.clone(),
+                    embedding: &screenshot_event.text_embedding.as_ref().unwrap(),
+                });
+            }
+        }
+        if let Some(query) = query_for_retrieval {
+            if retrieval_corpus.len() > MAX_NUM_RETRIEVED_IMAGES_PER_LLM_CALL {
+                let top_k_relevant_images = match dense_embedding_search(
+                    query,
+                    &retrieval_corpus,
+                    MAX_NUM_RETRIEVED_IMAGES_PER_LLM_CALL,
+                )
+                .await
+                {
+                    Ok(top_k_relevant_images) => top_k_relevant_images,
+                    Err(e) => return Err(BuildMessagesError::RetrievalError(e)),
+                };
+                top_k_relevant_images.into_iter().for_each(|image| {
+                    messages_rev.insert(
+                        messages_rev.len() - 1,
+                        image.embedded_document.document.to_llm_message(None),
+                    );
+                });
+            } else {
+                retrieval_corpus.into_iter().for_each(|image| {
+                    messages_rev
+                        .insert(messages_rev.len() - 1, image.document.to_llm_message(None));
+                });
+            }
+        }
+        messages_rev.reverse();
+        Ok(messages_rev)
     }
 }

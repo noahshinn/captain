@@ -76,7 +76,7 @@ async fn handle_autocomplete(
 }
 
 async fn generate_autocompletion(trajectory: Arc<Mutex<Trajectory>>) -> Result<String, LLMError> {
-    let messages = trajectory.lock().await.build_messages().await;
+    let messages = trajectory.lock().await.build_messages(None).await.unwrap();
     let completion_request = CompletionBuilder::new()
         .model(Model::Claude35Sonnet)
         .provider(Provider::Anthropic)

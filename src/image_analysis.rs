@@ -13,7 +13,7 @@ pub enum DiscardRedundantScreenshotError {
     #[error("Markdown code block missing in response")]
     MarkdownCodeBlockMissingError(#[from] MarkdownCodeBlockMissingError),
     #[error("Error parsing JSON response")]
-    JSONError(#[from] serde_json::Error),
+    JSONError(String),
 }
 
 const SIMILARITY_THRESHOLD_NUM_PIXELS: i32 = 1_000_000;
@@ -70,7 +70,12 @@ async fn should_discard_past_screenshot(
     let json: PreviousScreenshotContainsImportantInformationNotPresentInCurrentScreenshotResponse =
         match serde_json::from_str(&json_string) {
             Ok(json) => json,
-            Err(e) => return Err(DiscardRedundantScreenshotError::JSONError(e)),
+            Err(e) => {
+                return Err(DiscardRedundantScreenshotError::JSONError(format!(
+                    "Error parsing JSON response: {}",
+                    e
+                )))
+            }
         };
     Ok(!json.previous_screenshot_contains_important_information_not_present_in_current_screenshot)
 }

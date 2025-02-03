@@ -6,6 +6,7 @@ pub mod image_analysis;
 pub mod llm;
 pub mod prompts;
 pub mod screenshot;
+pub mod search;
 pub mod shell;
 pub mod trajectory;
 pub mod utils;
