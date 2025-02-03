@@ -154,8 +154,16 @@ fn parse_autocomplete_response(
         Ok(json_string) => json_string,
         Err(e) => return Err(ParseAutocompleteResponseError::MarkdownCodeBlockMissingError(e)),
     };
-    match serde_json::from_str(&json_string) {
-        Ok(autocomplete_response) => Ok(autocomplete_response),
-        Err(e) => Err(ParseAutocompleteResponseError::ParseJsonError(e)),
-    }
+    let autocomplete_response: AutocompleteResponse = match serde_json::from_str(&json_string) {
+        Ok(autocomplete_response) => autocomplete_response,
+        Err(e) => return Err(ParseAutocompleteResponseError::ParseJsonError(e)),
+    };
+    let autocomplete_response = autocomplete_response
+        .autocomplete
+        .split('\n')
+        .next()
+        .unwrap_or("");
+    Ok(AutocompleteResponse {
+        autocomplete: autocomplete_response.to_string(),
+    })
 }
