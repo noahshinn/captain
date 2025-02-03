@@ -14,6 +14,8 @@ cargo run -- shell
 
 ## Autocomplete
 
+Warning: This tool is an experimental feature. It will directly send keyboard events to your computer.
+
 ```bash
 cargo run -- autocomplete
 ```
