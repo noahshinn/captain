@@ -1,5 +1,7 @@
+use crate::embeddings::embedding;
 use crate::image_analysis::is_redundant_screenshot;
 use crate::llm::{Message, MessageContent, Role};
+use crate::screenshot::generate_text_description_of_screenshot;
 use crate::screenshot::Screenshot;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -22,6 +24,7 @@ pub struct ScreenshotEvent {
     pub text_description: Option<String>,
     pub screenshot: Screenshot,
     pub is_redundant: bool,
+    pub text_embedding: Option<Vec<f32>>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +85,7 @@ impl Trajectory {
             text_description: None,
             screenshot: screenshot.clone(),
             is_redundant: false,
+            text_embedding: None,
         }));
         let new_event_idx = events.lock().await.len() - 1;
         if self.discard_redundant_screenshots {
@@ -120,17 +124,24 @@ impl Trajectory {
             .filter(|message| message.role != Role::System)
             .collect::<Vec<Message>>();
         tokio::spawn(async move {
-            let text_description = crate::screenshot::generate_text_description_of_screenshot(
-                &screenshot,
-                &conversation_history,
-            )
-            .await;
-            // mutate the event to add the text description
+            let text_description =
+                generate_text_description_of_screenshot(&screenshot, &conversation_history).await;
             match text_description {
                 Ok(text_description) => {
                     let mut events = events.lock().await;
                     if let Event::Screenshot(screenshot_event) = &mut events[new_event_idx] {
-                        screenshot_event.text_description = Some(text_description);
+                        screenshot_event.text_description = Some(text_description.clone());
+                    }
+                    let text_embedding = match embedding(vec![text_description]).await {
+                        Ok(text_embedding) => text_embedding,
+                        Err(e) => {
+                            println!("[warning] Error generating text embedding: {}", e);
+                            return;
+                        }
+                    };
+                    if let Event::Screenshot(screenshot_event) = &mut events[new_event_idx] {
+                        screenshot_event.text_embedding =
+                            Some(text_embedding.first().unwrap().clone());
                     }
                 }
                 Err(e) => {
