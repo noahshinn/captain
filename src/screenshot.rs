@@ -4,11 +4,11 @@ use crate::llm::{
 };
 use crate::prompts::SCREENSHOT_DESCRIPTION_SYSTEM_PROMPT;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use chrono::{DateTime, Utc};
 use image::{ImageBuffer, Rgba};
 use screenshots::Screen;
 use std::time::SystemTime;
 use thiserror::Error;
-use tokio::time::{interval, Duration};
 
 #[derive(Debug, Clone)]
 pub struct Screenshot {
@@ -16,6 +16,32 @@ pub struct Screenshot {
     // base64 encoded image data
     pub image_data: String,
     pub image: ImageBuffer<Rgba<u8>, Vec<u8>>,
+}
+
+impl Screenshot {
+    pub fn to_llm_message(&self, suffix: Option<String>) -> Message {
+        let datetime: DateTime<Utc> = self.timestamp.into();
+        let formatted_datetime = datetime.format("%d/%m/%Y %T");
+        let suffix = match suffix {
+            Some(suffix) => format!(" {}", suffix),
+            None => "".to_string(),
+        };
+        Message {
+            role: Role::User,
+            content: MessageContent::MultiContent(vec![
+                ContentBlock::Image {
+                    source: ImageSource {
+                        source_type: "base64".to_string(),
+                        media_type: "image/jpeg".to_string(),
+                        data: self.image_data.clone(),
+                    },
+                },
+                ContentBlock::Text {
+                    text: format!("[Screenshot taken at {}]{}", formatted_datetime, suffix),
+                },
+            ]),
+        }
+    }
 }
 
 #[derive(Error, Debug)]
@@ -26,24 +52,6 @@ pub enum ScreenshotError {
     EncodeError,
     #[error("No screens found")]
     NoScreensFound,
-}
-
-pub async fn start_capture(on_screenshot: impl Fn(Screenshot) + Send + 'static) {
-    println!("Starting screenshot capture");
-    let screenshot = take_screenshot().await;
-    if let Ok(screenshot) = screenshot {
-        on_screenshot(screenshot);
-    }
-    tokio::spawn(async move {
-        let mut interval = interval(Duration::from_secs(5));
-        loop {
-            interval.tick().await;
-            let screenshot = take_screenshot().await;
-            if let Ok(screenshot) = screenshot {
-                on_screenshot(screenshot);
-            }
-        }
-    });
 }
 
 pub async fn take_screenshot() -> Result<Screenshot, ScreenshotError> {

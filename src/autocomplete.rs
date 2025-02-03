@@ -3,9 +3,9 @@ use crate::prompts::AUTOCOMPLETE_SYSTEM_PROMPT;
 use crate::screenshot::take_screenshot;
 use crate::screenshot::ScreenshotError;
 use crate::trajectory::Trajectory;
+use crate::utils::{parse_markdown_code_block, MarkdownCodeBlockMissingError};
 use device_query::{DeviceQuery, DeviceState, Keycode};
 use enigo::{Enigo, InputError, Keyboard, Settings};
-use regex;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
@@ -25,8 +25,8 @@ pub enum AutocompleteError {
 
 #[derive(Error, Debug)]
 pub enum ParseAutocompleteResponseError {
-    #[error("No markdown code block found")]
-    NoMarkdownCodeBlockFound(String),
+    #[error("Markdown code block missing")]
+    MarkdownCodeBlockMissingError(#[from] MarkdownCodeBlockMissingError),
     #[error("Error parsing JSON")]
     ParseJsonError(#[from] serde_json::Error),
 }
@@ -152,20 +152,10 @@ fn parse_autocomplete_response(
 ) -> Result<AutocompleteResponse, ParseAutocompleteResponseError> {
     let json_string = match parse_markdown_code_block(response) {
         Ok(json_string) => json_string,
-        Err(e) => return Err(e),
+        Err(e) => return Err(ParseAutocompleteResponseError::MarkdownCodeBlockMissingError(e)),
     };
     match serde_json::from_str(&json_string) {
         Ok(autocomplete_response) => Ok(autocomplete_response),
         Err(e) => Err(ParseAutocompleteResponseError::ParseJsonError(e)),
-    }
-}
-
-fn parse_markdown_code_block(response: &str) -> Result<String, ParseAutocompleteResponseError> {
-    let re = regex::Regex::new(r"```(.*?)```").unwrap();
-    match re.find(response) {
-        Some(code_block) => Ok(code_block.as_str().to_string()),
-        None => Err(ParseAutocompleteResponseError::NoMarkdownCodeBlockFound(
-            format!("No markdown code block found in response: {}", response),
-        )),
     }
 }

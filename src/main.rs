@@ -1,10 +1,12 @@
 use clap::{Parser, Subcommand};
 pub mod autocomplete;
+pub mod image_analysis;
 pub mod llm;
 pub mod prompts;
 pub mod screenshot;
 pub mod shell;
 pub mod trajectory;
+pub mod utils;
 
 #[derive(Parser)]
 #[command(name = "captain")]

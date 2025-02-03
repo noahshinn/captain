@@ -1,6 +1,6 @@
+use crate::image_analysis::is_redundant_screenshot;
 use crate::llm::{Message, MessageContent, Role};
 use crate::screenshot::Screenshot;
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -21,6 +21,7 @@ pub struct Trajectory {
 pub struct ScreenshotEvent {
     pub text_description: Option<String>,
     pub screenshot: Screenshot,
+    pub is_redundant: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +78,41 @@ impl Trajectory {
             }
         }
         let events = self.events.clone();
+        events.lock().await.push(Event::Screenshot(ScreenshotEvent {
+            text_description: None,
+            screenshot: screenshot.clone(),
+            is_redundant: false,
+        }));
+        let new_event_idx = events.lock().await.len() - 1;
+        if self.discard_redundant_screenshots {
+            let events = events.clone();
+            let screenshot = screenshot.clone();
+            tokio::spawn(async move {
+                let last_screenshot = match events.lock().await.get(new_event_idx - 1) {
+                    Some(Event::Screenshot(screenshot_event)) => {
+                        screenshot_event.screenshot.clone()
+                    }
+                    _ => return,
+                };
+                let should_discard_previous_screenshot =
+                    match is_redundant_screenshot(&last_screenshot, &screenshot).await {
+                        Ok(should_discard_previous_screenshot) => {
+                            should_discard_previous_screenshot
+                        }
+                        Err(e) => {
+                            println!("[warning] Error checking if screenshot is redundant: {}", e);
+                            false
+                        }
+                    };
+                if should_discard_previous_screenshot {
+                    if let Event::Screenshot(screenshot_event) =
+                        &mut events.lock().await[new_event_idx]
+                    {
+                        screenshot_event.is_redundant = true;
+                    }
+                }
+            });
+        }
         let conversation_history = self
             .build_messages()
             .await
@@ -89,12 +125,13 @@ impl Trajectory {
                 &conversation_history,
             )
             .await;
+            // mutate the event to add the text description
             match text_description {
                 Ok(text_description) => {
-                    events.lock().await.push(Event::Screenshot(ScreenshotEvent {
-                        text_description: Some(text_description),
-                        screenshot: screenshot,
-                    }));
+                    let mut events = events.lock().await;
+                    if let Event::Screenshot(screenshot_event) = &mut events[new_event_idx] {
+                        screenshot_event.text_description = Some(text_description);
+                    }
                 }
                 Err(e) => {
                     println!(
@@ -114,34 +151,19 @@ impl Trajectory {
             match event {
                 Event::Message(message) => messages.push(message),
                 Event::Screenshot(screenshot_event) => {
+                    if screenshot_event.is_redundant {
+                        continue;
+                    }
                     if num_images < MAX_NUM_IMAGES_PER_LLM_CALL {
-                        messages.push(Message {
-                            role: Role::User,
-                            content: MessageContent::MultiContent(vec![
-                                crate::llm::ContentBlock::Image {
-                                    source: crate::llm::ImageSource {
-                                        source_type: "base64".to_string(),
-                                        media_type: "image/jpeg".to_string(),
-                                        data: screenshot_event.screenshot.image_data,
-                                    },
-                                },
-                            ]),
-                        });
+                        messages.push(screenshot_event.screenshot.to_llm_message(None));
                         num_images += 1;
                     } else if let Some(text_description) = screenshot_event.text_description {
                         if num_image_text_descriptions
                             < MAX_NUM_SCREENSHOT_TEXT_DESCRIPTIONS_PER_LLM_CALL
                         {
-                            let datetime: DateTime<Utc> =
-                                screenshot_event.screenshot.timestamp.into();
-                            let formatted_datetime = datetime.format("%d/%m/%Y %T");
-                            messages.push(Message {
-                                role: Role::User,
-                                content: MessageContent::Text(format!(
-                                    "[Text description of screenshot at {}]: {}",
-                                    formatted_datetime, text_description
-                                )),
-                            });
+                            messages.push(screenshot_event.screenshot.to_llm_message(Some(
+                                format!("Text description: {}", text_description),
+                            )));
                             num_image_text_descriptions += 1;
                         }
                     }
