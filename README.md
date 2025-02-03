@@ -19,3 +19,5 @@ Warning: This tool is an experimental feature. It will directly send keyboard ev
 ```bash
 cargo run -- autocomplete
 ```
+
+Tap `Cmd` to trigger an autocompletion.
