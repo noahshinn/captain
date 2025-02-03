@@ -1,6 +1,6 @@
 # Captain
 
-Watches your screen and uses LLMs to help you with your work.
+Watches your screen and uses LLMs to help with your work.
 
 ## Requirements
 
