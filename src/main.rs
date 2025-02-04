@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 
+pub mod audio;
 pub mod autocomplete;
 pub mod embeddings;
 pub mod image_analysis;
